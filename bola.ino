@@ -1,59 +1,144 @@
 #include <Servo.h>
 
-Servo myServo1;  // crea un objeto Servo para controlar el primer servo
-Servo myServo2;  // crea un objeto Servo para controlar el segundo servo
+Servo myServo;
 
-const int trigPin = 4;   // pin de disparo del sensor ultrasónico
-const int echoPin = 5;  // pin de eco del sensor ultrasónico
+// Ultrasonic sensor pins
+const int trigPin = 4;
+const int echoPin = 3;
 
+// Servo parameters
+const int servoPin = 2;
+const int centerAngle = 120;
+const int angleRange = 20;  // ±10 degrees from the center
+const int minAngle = centerAngle - angleRange / 2;
+const int maxAngle = centerAngle + angleRange / 2;
+
+// Control parameters
+const int targetDistance = 10;
+const int numReadings = 10;
+const float Kp = 0.5;
+const float Ki = 0.1;  // Integral constant
+const float Kd = 0.1;  // Derivative constant
+
+// Variables
+long duration;
+int distance;
+int angle = centerAngle;
+int lastError = 0;
+int total = 0;
+int readIndex = 0;
+int readings[numReadings];
+int average = 0;
+unsigned long lastTime;
+unsigned long currentTime;
+float integral = 0;
+
+// Arrays for storing distance and time for derivative calculation
+const int historySize = 10;
+int distanceHistory[historySize];
+unsigned long timeHistory[historySize];
+int historyIndex = 0;
+
+// Setup function
 void setup() {
-  Serial.begin(9600);  // inicia la comunicación serial a 9600 bps
-  myServo1.attach(2);  // conecta el primer servo al pin digital 2
-  myServo2.attach(3);  // conecta el segundo servo al pin digital 3
-  
-  pinMode(trigPin, OUTPUT); // configura el pin de disparo como salida
-  pinMode(echoPin, INPUT);  // configura el pin de eco como entrada
+  myServo.attach(servoPin);
+  myServo.write(angle);
 
-  myServo1.write(54);  // fija el primer servo en la posición inicial de 54 grados
-  myServo2.write(54);  // fija el segundo servo en la posición inicial de 54 grados
-  Serial.println("Servos inicializados en 54 grados (medio).");
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  Serial.begin(9600);
+
+  for (int i = 0; i < numReadings; i++) {
+    readings[i] = 0;
+  }
+
+  for (int i = 0; i < historySize; i++) {
+    distanceHistory[i] = 0;
+    timeHistory[i] = 0;
+  }
+
+  lastTime = millis();
 }
 
-long readUltrasonicDistance(int triggerPin, int echoPin) {
-  digitalWrite(triggerPin, LOW); 
-  delayMicroseconds(2); 
-  digitalWrite(triggerPin, HIGH);
-  delayMicroseconds(10); 
-  digitalWrite(triggerPin, LOW);
-  long duration = pulseIn(echoPin, HIGH);
-  long distance = duration * 0.034 / 2;
-  return distance;
+// Function to get distance
+void getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  duration = pulseIn(echoPin, HIGH);
+  distance = duration * 0.034 / 2;
+  if (distance > 200) {
+    distance = 1;
+  }
 }
 
+// Function to update readings
+void updateReadings() {
+  total -= readings[readIndex];
+  readings[readIndex] = distance;
+  total += readings[readIndex];
+  readIndex = (readIndex + 1) % numReadings;
+  average = total / numReadings;
+}
+
+// Function to update history
+void updateHistory() {
+  distanceHistory[historyIndex] = average;
+  timeHistory[historyIndex] = millis();
+  historyIndex = (historyIndex + 1) % historySize;
+}
+
+// Function to calculate derivative
+float calculateDerivative() {
+  int oldestIndex = (historyIndex + 1) % historySize;
+  int newestIndex = (historyIndex - 1 + historySize) % historySize;
+
+  int distanceDiff = distanceHistory[newestIndex] - distanceHistory[oldestIndex];
+  unsigned long timeDiff = timeHistory[newestIndex] - timeHistory[oldestIndex];
+
+  if (timeDiff == 0) {
+    return 0;
+  }
+
+  return (float)distanceDiff / timeDiff;
+}
+
+// PID control function
+void controlServo() {
+  int error = average - targetDistance;
+
+  integral += error;
+  float derivative = calculateDerivative();
+
+  int deltaAngle = Kp * error + Ki * integral + Kd * derivative;
+  angle = centerAngle + deltaAngle;
+  angle = constrain(angle, minAngle, maxAngle);
+
+  myServo.write(angle);
+
+  // Reset integral and derivative components if close to target
+  if (abs(error) <= 1) {
+    integral = 0;
+  }
+}
+
+// Loop function
 void loop() {
-  long distance = readUltrasonicDistance(trigPin, echoPin);
-  Serial.print("Distancia medida: ");
-  Serial.print(distance);
-  Serial.println(" cm");
+  getDistance();
+  updateReadings();
+  updateHistory();
+  controlServo();
 
-  // Mueve los servos de 54 a 84 grados (myServo1) y de 54 a 24 grados (myServo2)
-  for (int pos = 54; pos <= 84; pos++) {
-    myServo1.write(pos);              // mueve myServo1 de 54 a 84 grados
-    myServo2.write(108 - pos);        // mueve myServo2 en dirección opuesta, de 54 a 24 grados
-    delay(50);  // Añade un pequeño retraso para ver el movimiento de los servos
-  }
-  
-  // Mueve los servos de 84 a 24 grados (myServo1) y de 24 a 84 grados (myServo2)
-  for (int pos = 84; pos >= 24; pos--) {
-    myServo1.write(pos);              // mueve myServo1 de 84 a 24 grados
-    myServo2.write(108 - pos);        // mueve myServo2 en dirección opuesta, de 24 a 84 grados
-    delay(50);  // Añade un pequeño retraso para ver el movimiento de los servos
-  }
+  Serial.print("Time: ");
+  Serial.print(millis());
+  Serial.print(", Distance: ");
+  Serial.print(average);
+  Serial.print(", Angle: ");
+  Serial.println(angle);
 
-  // Mueve los servos de 24 a 54 grados (myServo1) y de 84 a 54 grados (myServo2)
-  for (int pos = 24; pos <= 54; pos++) {
-    myServo1.write(pos);              // mueve myServo1 de 24 a 54 grados
-    myServo2.write(108 - pos);        // mueve myServo2 de 84 a 54 grados
-    delay(50);  // Añade un pequeño retraso para ver el movimiento de los servos
-  }
+  delay(100);
 }
